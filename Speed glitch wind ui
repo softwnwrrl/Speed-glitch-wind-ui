@@ -1,0 +1,254 @@
+-- ============================================
+-- SPEED GLITCH + MACRO + WALL PUSH (WINDUI)
+-- Direction: Joystick (default) + Forced toggle
+-- ============================================
+
+local WindUI = loadstring(game:HttpGet("https://github.com/Footagesus/WindUI/releases/latest/download/main.lua"))()
+
+if not WindUI then
+    game:GetService("StarterGui"):SetCore("SendNotification", {Title = "Error", Text = "WindUI failed to load", Duration = 5})
+    return
+end
+
+local player = game.Players.LocalPlayer
+local RunService = game:GetService("RunService")
+
+local character = player.Character or player.CharacterAdded:Wait()
+local humanoid = character:WaitForChild("Humanoid")
+local rootPart = character:WaitForChild("HumanoidRootPart")
+
+-- Settings
+local speedEnabled = false
+local speedPower = 3
+local macroEnabled = false
+local macroInterval = 0.01
+local lastMacroTick = 0
+local wallPush = false
+local wallPushPower = 1.2
+
+-- Direction settings (NEW)
+local forcedDirectionEnabled = false
+local forcedDirection = "Forward"
+
+-- Macro angles
+local macroAngleMin = 80
+local macroAngleMax = 120
+
+-- Update character on respawn
+player.CharacterAdded:Connect(function(newChar)
+    character = newChar
+    humanoid = newChar:WaitForChild("Humanoid")
+    rootPart = newChar:WaitForChild("HumanoidRootPart")
+end)
+
+-- Direction logic (NEW)
+local function getForcedDirectionVector()
+    if not rootPart then return Vector3.zero end
+    local look = rootPart.CFrame.LookVector
+    local right = rootPart.CFrame.RightVector
+    if forcedDirection == "Forward" then return look
+    elseif forcedDirection == "Backward" then return -look
+    elseif forcedDirection == "Left" then return -right
+    elseif forcedDirection == "Right" then return right
+    elseif forcedDirection == "Forward Left" then return (look - right).Unit
+    elseif forcedDirection == "Forward Right" then return (look + right).Unit
+    elseif forcedDirection == "Backward Left" then return (-look - right).Unit
+    elseif forcedDirection == "Backward Right" then return (-look + right).Unit
+    end
+    return look
+end
+
+local function getSpeedDirection()
+    if not humanoid or not rootPart then return Vector3.zero end
+    
+    if forcedDirectionEnabled then
+        return getForcedDirectionVector()
+    end
+    
+    if humanoid.MoveDirection.Magnitude > 0 then
+        return humanoid.MoveDirection.Unit
+    else
+        return Vector3.zero
+    end
+end
+
+-- Speed Glitch
+RunService.RenderStepped:Connect(function()
+    if speedEnabled and humanoid and rootPart then
+        local state = humanoid:GetState()
+        if state == Enum.HumanoidStateType.Jumping or state == Enum.HumanoidStateType.Freefall then
+            local dir = getSpeedDirection()
+            if dir.Magnitude > 0 then
+                rootPart.AssemblyLinearVelocity += dir * speedPower
+            end
+        end
+    end
+end)
+
+-- Fake Macro
+RunService.RenderStepped:Connect(function()
+    if macroEnabled and humanoid and rootPart then
+        if not speedEnabled then
+            macroEnabled = false
+            humanoid.AutoRotate = true
+            return
+        end
+        local state = humanoid:GetState()
+        if state == Enum.HumanoidStateType.Jumping or state == Enum.HumanoidStateType.Freefall then
+            humanoid.AutoRotate = false
+            if tick() - lastMacroTick > macroInterval then
+                lastMacroTick = tick()
+                local dir = (math.random(0,1) == 0) and -1 or 1
+                local angle = math.rad(math.random(macroAngleMin, macroAngleMax) * dir)
+                rootPart.CFrame = rootPart.CFrame * CFrame.Angles(0, angle, 0)
+            end
+            if wallPush then
+                local pushDir = getSpeedDirection()
+                if pushDir.Magnitude > 0 then
+                    rootPart.AssemblyLinearVelocity += pushDir * wallPushPower
+                end
+            end
+        else
+            humanoid.AutoRotate = true
+        end
+    else
+        if humanoid then
+            humanoid.AutoRotate = true
+        end
+    end
+end)
+
+-- ============ WINDUI MENU ============
+local Window = WindUI:CreateWindow({
+    Title = "WNW GLITCH",
+    Author = "",
+    Folder = "wnw_glitch",
+    Size = UDim2.fromOffset(450, 550),
+    Theme = "Dark"
+})
+
+local MainTab = Window:Tab({Title = "Main"})
+local MacroTab = Window:Tab({Title = "Macro"})
+local AngleTab = Window:Tab({Title = "Angle"})
+local ESG = Window:Tab({Title = "ESG"})
+local WallTab = Window:Tab({Title = "Wall"})
+
+-- MAIN TAB
+MainTab:Toggle({
+    Title = "Speed Glitch",
+    Description = "Enable speed boost in air",
+    Default = false,
+    Callback = function(v) speedEnabled = v end
+})
+
+MainTab:Slider({
+    Title = "Speed Power",
+    Description = "Boost power (1-30)",
+    Value = {Min = 1, Max = 30, Default = 3},
+    Step = 1,
+    Callback = function(v) speedPower = v end
+})
+
+MainTab:Toggle({
+    Title = "Jump Like Macros",
+    Description = "Enable auto rotation macro",
+    Default = false,
+    Callback = function(v)
+        if not speedEnabled then
+            WindUI:Notify({Title = "Error", Content = "Enable Speed Glitch first", Duration = 2})
+            return
+        end
+        macroEnabled = v
+    end
+})
+
+-- MACRO TAB
+MacroTab:Paragraph({
+    Title = "Macro Speed",
+    Content = "1 = 0.001s | 100 = 0.1s"
+})
+
+MacroTab:Slider({
+    Title = "Macro Speed",
+    Description = "Delay between rotations",
+    Value = {Min = 1, Max = 100, Default = 10},
+    Step = 1,
+    Callback = function(v) macroInterval = v / 1000 end
+})
+
+-- ANGLE TAB
+AngleTab:Paragraph({
+    Title = "Angle Macro Power",
+    Content = "Rotation angle range"
+})
+
+AngleTab:Slider({
+    Title = "Macro Angle Min",
+    Description = "Minimum rotation angle",
+    Value = {Min = 1, Max = 180, Default = 80},
+    Step = 1,
+    Callback = function(v)
+        macroAngleMin = v
+        if macroAngleMin > macroAngleMax then macroAngleMax = macroAngleMin end
+    end
+})
+
+AngleTab:Slider({
+    Title = "Macro Angle Max",
+    Description = "Maximum rotation angle",
+    Value = {Min = 1, Max = 180, Default = 120},
+    Step = 1,
+    Callback = function(v)
+        macroAngleMax = v
+        if macroAngleMax < macroAngleMin then macroAngleMin = macroAngleMax end
+    end
+})
+
+-- ESG TAB (NEW - with Joystick + Forced toggle)
+ESG:Paragraph({
+    Title = "Direction Mode",
+    Content = "Default: Joystick (WASD). Enable Forced to use fixed direction."
+})
+
+ESG:Toggle({
+    Title = "Forced Direction",
+    Description = "ON = fixed direction | OFF = Joystick",
+    Default = false,
+    Callback = function(v)
+        forcedDirectionEnabled = v
+    end
+})
+
+ESG:Dropdown({
+    Title = "Direction",
+    Description = "Direction when Forced is ON",
+    Options = {"Forward", "Backward", "Left", "Right", "Forward Left", "Forward Right", "Backward Left", "Backward Right"},
+    Default = "Forward",
+    Callback = function(v)
+        forcedDirection = v
+    end
+})
+
+-- WALL TAB
+WallTab:Paragraph({
+    Title = "Wall Push",
+    Content = "Extra push when hitting walls"
+})
+
+WallTab:Toggle({
+    Title = "Wall Push",
+    Description = "Enable wall push",
+    Default = false,
+    Callback = function(v) wallPush = v end
+})
+
+WallTab:Slider({
+    Title = "Wall Push Power",
+    Description = "Push strength",
+    Value = {Min = 1, Max = 50, Default = 12},
+    Step = 1,
+    Callback = function(v) wallPushPower = v / 10 end
+})
+
+print("WNW Glitch loaded (WindUI)")
+WindUI:Notify({Title = "Ready", Content = "Speed Glitch + Macro", Duration = 3})
