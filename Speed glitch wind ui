@@ -1,6 +1,6 @@
 -- ============================================
--- SPEED GLITCH + MACRO + WALL PUSH (WINDUI)
--- Direction: Joystick (default) + Forced toggle
+-- SPEED GLITCH + MC HOLD + JB JUMP (WINDUI)
+-- FIX: respawn handler + button re-parenting
 -- ============================================
 
 local WindUI = loadstring(game:HttpGet("https://github.com/Footagesus/WindUI/releases/latest/download/main.lua"))()
@@ -12,36 +12,44 @@ end
 
 local player = game.Players.LocalPlayer
 local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
 
 local character = player.Character or player.CharacterAdded:Wait()
 local humanoid = character:WaitForChild("Humanoid")
 local rootPart = character:WaitForChild("HumanoidRootPart")
 
--- Settings
+-- ============ SPEED GLITCH SETTINGS ============
 local speedEnabled = false
 local speedPower = 3
-local macroEnabled = false
+local macroRotEnabled = false
 local macroInterval = 0.01
 local lastMacroTick = 0
 local wallPush = false
 local wallPushPower = 1.2
-
--- Direction settings (NEW)
 local forcedDirectionEnabled = false
 local forcedDirection = "Forward"
-
--- Macro angles
 local macroAngleMin = 80
 local macroAngleMax = 120
 
--- Update character on respawn
-player.CharacterAdded:Connect(function(newChar)
-    character = newChar
-    humanoid = newChar:WaitForChild("Humanoid")
-    rootPart = newChar:WaitForChild("HumanoidRootPart")
-end)
+-- ============ HOLD MACRO SPIN SETTINGS ============
+local macroSpinActive = false
+local spinConnection = nil
+local editMode = false
+local originalSpeed = 16
+local currentBoost = 0
+local boostConnection = nil
 
--- Direction logic (NEW)
+-- ============ JUMP BOOST SETTINGS ============
+local jumpHeight = 50
+local jumpCooldown = 1.5
+local lastJump = 0
+
+-- ============ GUI ELEMENTS (глобальные) ============
+local screenGui = nil
+local mcButton = nil
+local jbButton = nil
+
+-- ============ DIRECTION LOGIC ============
 local function getForcedDirectionVector()
     if not rootPart then return Vector3.zero end
     local look = rootPart.CFrame.LookVector
@@ -60,11 +68,9 @@ end
 
 local function getSpeedDirection()
     if not humanoid or not rootPart then return Vector3.zero end
-    
     if forcedDirectionEnabled then
         return getForcedDirectionVector()
     end
-    
     if humanoid.MoveDirection.Magnitude > 0 then
         return humanoid.MoveDirection.Unit
     else
@@ -72,9 +78,10 @@ local function getSpeedDirection()
     end
 end
 
--- Speed Glitch
-RunService.RenderStepped:Connect(function()
-    if speedEnabled and humanoid and rootPart then
+-- ============ SPEED GLITCH ============
+local speedConnection
+speedConnection = RunService.RenderStepped:Connect(function()
+    if speedEnabled and humanoid and rootPart and not macroSpinActive then
         local state = humanoid:GetState()
         if state == Enum.HumanoidStateType.Jumping or state == Enum.HumanoidStateType.Freefall then
             local dir = getSpeedDirection()
@@ -85,12 +92,14 @@ RunService.RenderStepped:Connect(function()
     end
 end)
 
--- Fake Macro
-RunService.RenderStepped:Connect(function()
-    if macroEnabled and humanoid and rootPart then
+-- ============ FAKE MACRO ============
+local macroConnection
+macroConnection = RunService.RenderStepped:Connect(function()
+    if macroRotEnabled and humanoid and rootPart and not macroSpinActive then
         if not speedEnabled then
-            macroEnabled = false
+            macroRotEnabled = false
             humanoid.AutoRotate = true
+            WindUI:Notify({Title = "Error", Content = "Enable Speed Glitch first", Duration = 2})
             return
         end
         local state = humanoid:GetState()
@@ -112,26 +121,283 @@ RunService.RenderStepped:Connect(function()
             humanoid.AutoRotate = true
         end
     else
-        if humanoid then
+        if humanoid and not macroSpinActive then
             humanoid.AutoRotate = true
         end
     end
 end)
 
+-- ============ HOLD MACRO SPIN ============
+local function startSpeedRamp()
+    if boostConnection then boostConnection:Disconnect() end
+    currentBoost = speedPower
+    
+    boostConnection = RunService.RenderStepped:Connect(function()
+        if not macroSpinActive then return end
+        if currentBoost < 1000 then
+            currentBoost = currentBoost + speedPower * 1.5
+        end
+        local state = humanoid and humanoid:GetState()
+        if state == Enum.HumanoidStateType.Jumping or state == Enum.HumanoidStateType.Freefall then
+            local dir = getSpeedDirection()
+            if dir.Magnitude > 0 then
+                rootPart.AssemblyLinearVelocity = rootPart.AssemblyLinearVelocity + dir * currentBoost
+            end
+        end
+        if humanoid then
+            humanoid.WalkSpeed = 16 + currentBoost
+        end
+    end)
+end
+
+local function stopSpeedRamp()
+    if boostConnection then
+        boostConnection:Disconnect()
+        boostConnection = nil
+    end
+    currentBoost = 0
+    if humanoid then
+        humanoid.WalkSpeed = originalSpeed
+    end
+end
+
+local function startSpin()
+    if macroSpinActive then return end
+    macroSpinActive = true
+    if humanoid then
+        originalSpeed = humanoid.WalkSpeed
+        humanoid.AutoRotate = false
+    end
+    startSpeedRamp()
+    
+    spinConnection = RunService.RenderStepped:Connect(function()
+        if not macroSpinActive then return end
+        if tick() - lastMacroTick > macroInterval then
+            lastMacroTick = tick()
+            local dir = (math.random(0,1) == 0) and -1 or 1
+            local angle = math.rad(math.random(macroAngleMin, macroAngleMax) * dir)
+            if rootPart then
+                rootPart.CFrame = rootPart.CFrame * CFrame.Angles(0, angle, 0)
+            end
+        end
+    end)
+    
+    WindUI:Notify({Title = "Macro Spin", Content = "ON", Duration = 1})
+end
+
+local function stopSpin()
+    if not macroSpinActive then return end
+    macroSpinActive = false
+    if spinConnection then spinConnection:Disconnect() spinConnection = nil end
+    stopSpeedRamp()
+    if humanoid then
+        humanoid.AutoRotate = true
+    end
+    lastMacroTick = 0
+end
+
+-- ============ JUMP BOOST ============
+local function doJumpBoost()
+    if not rootPart or not humanoid or humanoid.Health <= 0 then
+        WindUI:Notify({Title = "Error", Content = "Character not ready", Duration = 1})
+        return
+    end
+    
+    local now = tick()
+    if now - lastJump < jumpCooldown then
+        WindUI:Notify({Title = "Cooldown", Content = string.format("%.1f sec left", jumpCooldown - (now - lastJump)), Duration = 1})
+        return
+    end
+    
+    local g = 196.2
+    local velocity = math.sqrt(2 * g * jumpHeight)
+    rootPart.AssemblyLinearVelocity = Vector3.new(rootPart.AssemblyLinearVelocity.X, velocity, rootPart.AssemblyLinearVelocity.Z)
+    lastJump = now
+    
+    WindUI:Notify({Title = "Jump Boost", Content = "Height: " .. jumpHeight .. " blocks", Duration = 1})
+end
+
+-- ============ СОЗДАНИЕ GUI КНОПОК ============
+local function createButtons()
+    if screenGui then screenGui:Destroy() end
+    
+    screenGui = Instance.new("ScreenGui")
+    screenGui.Name = "MacroButton"
+    screenGui.ResetOnSpawn = false
+    screenGui.Parent = player:WaitForChild("PlayerGui")
+    
+    -- MC Button (65x65)
+    mcButton = Instance.new("TextButton")
+    mcButton.Name = "MCButton"
+    mcButton.Size = UDim2.new(0, 65, 0, 65)
+    mcButton.Position = UDim2.new(0.5, -70, 0.9, -32)
+    mcButton.BackgroundColor3 = Color3.fromRGB(100, 100, 255)
+    mcButton.BackgroundTransparency = 0
+    mcButton.BorderSizePixel = 2
+    mcButton.BorderColor3 = Color3.fromRGB(255, 255, 255)
+    mcButton.Text = "MC"
+    mcButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+    mcButton.TextScaled = true
+    mcButton.Font = Enum.Font.GothamBold
+    mcButton.Parent = screenGui
+    
+    local mcCorner = Instance.new("UICorner")
+    mcCorner.CornerRadius = UDim.new(1, 0)
+    mcCorner.Parent = mcButton
+    
+    -- JB Button (65x65)
+    jbButton = Instance.new("TextButton")
+    jbButton.Name = "JBButton"
+    jbButton.Size = UDim2.new(0, 65, 0, 65)
+    jbButton.Position = UDim2.new(0.5, 5, 0.9, -32)
+    jbButton.BackgroundColor3 = Color3.fromRGB(255, 100, 0)
+    jbButton.BackgroundTransparency = 0
+    jbButton.BorderSizePixel = 2
+    jbButton.BorderColor3 = Color3.fromRGB(255, 255, 255)
+    jbButton.Text = "JB"
+    jbButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+    jbButton.TextScaled = true
+    jbButton.Font = Enum.Font.GothamBold
+    jbButton.Parent = screenGui
+    
+    local jbCorner = Instance.new("UICorner")
+    jbCorner.CornerRadius = UDim.new(1, 0)
+    jbCorner.Parent = jbButton
+    
+    -- ============ MC HOLD LOGIC ============
+    mcButton.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            if not editMode then
+                startSpin()
+                mcButton.BackgroundColor3 = Color3.fromRGB(0, 200, 0)
+            end
+        end
+    end)
+    
+    mcButton.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            if not editMode then
+                stopSpin()
+                mcButton.BackgroundColor3 = Color3.fromRGB(100, 100, 255)
+            end
+        end
+    end)
+    
+    -- ============ JB CLICK LOGIC ============
+    jbButton.MouseButton1Click:Connect(function()
+        if not editMode then
+            doJumpBoost()
+            local originalColor = jbButton.BackgroundColor3
+            jbButton.BackgroundColor3 = Color3.fromRGB(255, 200, 0)
+            task.wait(0.1)
+            jbButton.BackgroundColor3 = originalColor
+        end
+    end)
+    
+    -- ============ DRAG LOGIC ============
+    local dragging = false
+    local dragStart = nil
+    local startPos = nil
+    local activeButton = nil
+    
+    local function beginDrag(btn, input)
+        if editMode then
+            dragging = true
+            activeButton = btn
+            dragStart = input.Position
+            startPos = btn.Position
+            btn.BackgroundColor3 = Color3.fromRGB(200, 100, 255)
+        end
+    end
+    
+    local function updateDrag(input)
+        if dragging and editMode and activeButton then
+            local delta = input.Position - dragStart
+            local newX = startPos.X.Offset + delta.X
+            local newY = startPos.Y.Offset + delta.Y
+            activeButton.Position = UDim2.new(0, newX, 0, newY)
+        end
+    end
+    
+    local function endDrag()
+        if dragging and editMode and activeButton then
+            dragging = false
+            if activeButton == mcButton then
+                mcButton.BackgroundColor3 = macroSpinActive and Color3.fromRGB(0, 200, 0) or Color3.fromRGB(100, 100, 255)
+            elseif activeButton == jbButton then
+                jbButton.BackgroundColor3 = Color3.fromRGB(255, 100, 0)
+            end
+            activeButton = nil
+        end
+    end
+    
+    mcButton.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            beginDrag(mcButton, input)
+        end
+    end)
+    
+    jbButton.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            beginDrag(jbButton, input)
+        end
+    end)
+    
+    UserInputService.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+            updateDrag(input)
+        end
+    end)
+    
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            endDrag()
+        end
+    end)
+end
+
+-- ============ ОБРАБОТКА РЕСПАВНА ============
+local function onCharacterAdded(newChar)
+    character = newChar
+    humanoid = newChar:WaitForChild("Humanoid")
+    rootPart = newChar:WaitForChild("HumanoidRootPart")
+    
+    -- Сбрасываем активные состояния
+    if macroSpinActive then
+        stopSpin()
+        if mcButton then mcButton.BackgroundColor3 = Color3.fromRGB(100, 100, 255) end
+    end
+    
+    -- Пересоздаём кнопки (старые могли умереть вместе с персонажем)
+    createButtons()
+    
+    -- Восстанавливаем настройки
+    if speedEnabled then
+        speedEnabled = true
+    end
+    if macroRotEnabled and speedEnabled then
+        macroRotEnabled = true
+    end
+end
+
+-- Подписываемся на респавн
+player.CharacterAdded:Connect(onCharacterAdded)
+
 -- ============ WINDUI MENU ============
 local Window = WindUI:CreateWindow({
-    Title = "WNW GLITCH",
+    Title = "WNW GLITCH + MC + JB",
     Author = "",
     Folder = "wnw_glitch",
-    Size = UDim2.fromOffset(450, 550),
+    Size = UDim2.fromOffset(450, 600),
     Theme = "Dark"
 })
 
 local MainTab = Window:Tab({Title = "Main"})
 local MacroTab = Window:Tab({Title = "Macro"})
 local AngleTab = Window:Tab({Title = "Angle"})
-local ESG = Window:Tab({Title = "ESG"})
+local DirectionTab = Window:Tab({Title = "Direction"})
 local WallTab = Window:Tab({Title = "Wall"})
+local ButtonTab = Window:Tab({Title = "Button"})
 
 -- MAIN TAB
 MainTab:Toggle({
@@ -151,15 +417,31 @@ MainTab:Slider({
 
 MainTab:Toggle({
     Title = "Jump Like Macros",
-    Description = "Enable auto rotation macro",
+    Description = "Auto rotation macro (requires Speed Glitch)",
     Default = false,
     Callback = function(v)
         if not speedEnabled then
             WindUI:Notify({Title = "Error", Content = "Enable Speed Glitch first", Duration = 2})
             return
         end
-        macroEnabled = v
+        macroRotEnabled = v
     end
+})
+
+MainTab:Slider({
+    Title = "Jump Height",
+    Description = "JB jump height (10-200 blocks)",
+    Value = {Min = 10, Max = 200, Default = 50},
+    Step = 5,
+    Callback = function(v) jumpHeight = v end
+})
+
+MainTab:Slider({
+    Title = "Jump Cooldown",
+    Description = "Seconds between JB jumps",
+    Value = {Min = 0.5, Max = 5, Default = 1.5},
+    Step = 0.1,
+    Callback = function(v) jumpCooldown = v end
 })
 
 -- MACRO TAB
@@ -178,12 +460,12 @@ MacroTab:Slider({
 
 -- ANGLE TAB
 AngleTab:Paragraph({
-    Title = "Angle Macro Power",
-    Content = "Rotation angle range"
+    Title = "Macro Angle Range",
+    Content = "Min/Max rotation angle in degrees"
 })
 
 AngleTab:Slider({
-    Title = "Macro Angle Min",
+    Title = "Angle Min",
     Description = "Minimum rotation angle",
     Value = {Min = 1, Max = 180, Default = 80},
     Step = 1,
@@ -194,7 +476,7 @@ AngleTab:Slider({
 })
 
 AngleTab:Slider({
-    Title = "Macro Angle Max",
+    Title = "Angle Max",
     Description = "Maximum rotation angle",
     Value = {Min = 1, Max = 180, Default = 120},
     Step = 1,
@@ -204,29 +486,25 @@ AngleTab:Slider({
     end
 })
 
--- ESG TAB (NEW - with Joystick + Forced toggle)
-ESG:Paragraph({
+-- DIRECTION TAB
+DirectionTab:Paragraph({
     Title = "Direction Mode",
-    Content = "Default: Joystick (WASD). Enable Forced to use fixed direction."
+    Content = "Joystick = WASD movement | Forced = fixed direction"
 })
 
-ESG:Toggle({
+DirectionTab:Toggle({
     Title = "Forced Direction",
-    Description = "ON = fixed direction | OFF = Joystick",
+    Description = "Enable fixed direction mode",
     Default = false,
-    Callback = function(v)
-        forcedDirectionEnabled = v
-    end
+    Callback = function(v) forcedDirectionEnabled = v end
 })
 
-ESG:Dropdown({
+DirectionTab:Dropdown({
     Title = "Direction",
     Description = "Direction when Forced is ON",
     Options = {"Forward", "Backward", "Left", "Right", "Forward Left", "Forward Right", "Backward Left", "Backward Right"},
     Default = "Forward",
-    Callback = function(v)
-        forcedDirection = v
-    end
+    Callback = function(v) forcedDirection = v end
 })
 
 -- WALL TAB
@@ -244,11 +522,43 @@ WallTab:Toggle({
 
 WallTab:Slider({
     Title = "Wall Push Power",
-    Description = "Push strength",
+    Description = "Push strength (1-50)",
     Value = {Min = 1, Max = 50, Default = 12},
     Step = 1,
     Callback = function(v) wallPushPower = v / 10 end
 })
 
-print("WNW Glitch loaded (WindUI)")
-WindUI:Notify({Title = "Ready", Content = "Speed Glitch + Macro", Duration = 3})
+-- BUTTON TAB
+ButtonTab:Paragraph({
+    Title = "Buttons (65x65)",
+    Content = "MC: HOLD = speed ramp + spin | JB: CLICK = jump boost"
+})
+
+ButtonTab:Toggle({
+    Title = "Edit Mode",
+    Description = "Enable to move MC and JB buttons",
+    Default = false,
+    Callback = function(v)
+        editMode = v
+        if editMode then
+            WindUI:Notify({Title = "Edit Mode", Content = "Now you can move buttons", Duration = 2})
+        else
+            WindUI:Notify({Title = "Edit Mode", Content = "Buttons locked", Duration = 2})
+        end
+    end
+})
+
+ButtonTab:Button({
+    Title = "Reset Button Positions",
+    Description = "Move both buttons back to default",
+    Callback = function()
+        if mcButton then mcButton.Position = UDim2.new(0.5, -70, 0.9, -32) end
+        if jbButton then jbButton.Position = UDim2.new(0.5, 5, 0.9, -32) end
+        WindUI:Notify({Title = "Reset", Content = "Buttons moved to default positions", Duration = 2})
+    end
+})
+
+-- ============ ЗАПУСК ============
+createButtons()
+print("Script loaded: MC + JB | Respawn fixed")
+WindUI:Notify({Title = "Ready", Content = "MC = hold | JB = click | Works after death", Duration = 3})
